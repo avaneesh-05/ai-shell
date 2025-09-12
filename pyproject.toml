@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-shell"
+version = "0.1.0"
+description = "AI Shell: An AI-powered shell assistant with Gemini"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "typer[all]",
+    "rich",
+    "questionary",
+    "pyperclip",
+    "llama-index-llms-google-genai",
+    "python-dotenv",
+    "llama-index",
+]
+
+[project.scripts]
+ai = "cli:app"
+
+[tool.setuptools]
+# This section tells the installer which Python modules to include.
+py-modules = ["cli"]
+packages = ["commands", "helpers"]
+
+[tool.setuptools.package-data]
+# This section ensures non-Python files like en.json are included.
+"locales" = ["*.json"]
+
