@@ -9,6 +9,7 @@ from rich.text import Text
 from rich.spinner import Spinner
 from typing_extensions import Annotated
 from typing import List
+from llama_index.llms.google_genai import GoogleGenAI
 
 import pyperclip
 from helpers.config import get_config
@@ -22,6 +23,7 @@ from helpers.completion import (
 from helpers.i18n import _, set_language
 from helpers.shell_history import append_to_shell_history
 from helpers.error import KnownError
+from helpers.email_workflow import handle_email_intent
 
 # Create a dedicated Typer app for the 'prompt' command
 prompt_app = typer.Typer(
@@ -50,6 +52,26 @@ def _execute_prompt(use_prompt: str = "", silent_mode: bool = False):
 
         if not key:
             raise KnownError(_("Please set your Google Gemini API key via `ai config set GOOGLE_API_KEY=<your_token>`"))
+
+        # === 1. INTENT DETECTION (New Feature) ===
+        # Before generating a shell script, we check if the user wants to send an email.
+        if use_prompt and use_prompt.strip():
+            # Quick check: using a small LLM call to classify intent
+            # This class is now properly imported
+            classifier_llm = GoogleGenAI(model=model, api_key=key)
+            
+            # We ask the AI to classify the intent strictly
+            classification = classifier_llm.complete(
+                f"Analyze this user request: '{use_prompt}'.\n"
+                "Does the user explicitly want to draft or send an email/mail?\n"
+                "Reply ONLY with 'YES_EMAIL' or 'NO'."
+            ).text.strip().upper()
+
+            if "YES_EMAIL" in classification:
+                # Divert to the email workflow and exit this function upon completion
+                handle_email_intent(use_prompt)
+                return
+        # =========================================
 
         console.print(Panel(f"[bold cyan]{project_name}[/bold cyan]", expand=False, border_style="dim"))
 

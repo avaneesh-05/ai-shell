@@ -10,6 +10,11 @@ DEFAULT_CONFIG = {
     "MODEL": "gemini-1.5-flash",
     "SILENT_MODE": False,
     "LANGUAGE": "en",
+    # === NEW EMAIL SETTINGS ===
+    "EMAIL_USER": None,      # Corresponds to EMAIL_SENDER in your old code
+    "EMAIL_PASSWORD": None,  # Corresponds to EMAIL_PASSWORD
+    "SMTP_SERVER": "smtp.gmail.com",
+    "SMTP_PORT": 465,
 }
 
 def get_config() -> Dict[str, Any]:
