@@ -45,12 +45,25 @@ def generate_completion_stream(
 
 def get_script_and_info(prompt: str, key: str, model: str) -> str:
     """Generates just the shell script from a prompt."""
+    # full_prompt = textwrap.dedent(f"""
+    #     Create a command that one can enter in a terminal and run, based on what is specified in the prompt.
+    #     {get_shell_details()}
+    #     Only reply with the single line command. It must be able to be directly run in the target shell. Do not include any other text, explanations, or code fences.
+    #     Make sure the command runs on the {get_os_details()} operating system.
+    #     The prompt is: {prompt}
+    # """)
     full_prompt = textwrap.dedent(f"""
-        Create a single line command that one can enter in a terminal and run, based on what is specified in the prompt.
-        {get_shell_details()}
-        Only reply with the single line command. It must be able to be directly run in the target shell. Do not include any other text, explanations, or code fences.
-        Make sure the command runs on the {get_os_details()} operating system.
-        The prompt is: {prompt}
+        You are an expert shell command generator. Based on the user's prompt, create a command or script block that can be run in a terminal.
+        - The user's shell is: {get_shell_details()}.
+        - The user's OS is: {get_os_details()}.
+
+        RULES:
+        1.  **For multi-line output, especially code, you MUST use a 'here document'.** The format is `cat << 'EOF' > /path/to/filename.py`.
+        2.  The single-quoted `'EOF'` is MANDATORY to preserve indentation and prevent shell expansion of characters like `$`.
+        3.  The code you generate inside the script must be correct, runnable, and follow best practices.
+        4.  Reply ONLY with the command or script block. Do not include any other text, explanations, or markdown code fences.
+
+        The user's prompt is: "{prompt}"
     """)
     llm = get_gemini_llm(key, model)
     response = llm.complete(full_prompt)
