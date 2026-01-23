@@ -12,7 +12,6 @@ RISKY_KEYWORDS = [
     "chmod ", "chown ",           # Permissions
     "dd ", "format ", "mkfs",     # Disk formatting
     "mv ",                        # Moving (can overwrite)
-    ">",                          # Overwriting files
     "kill", "pkill",              # Stopping processes
     "shutdown", "reboot"          # System power
 ]

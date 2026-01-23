@@ -1,6 +1,121 @@
+# import os
+# import textwrap
+# from typing import Generator
+# from llama_index.llms.google_genai import GoogleGenAI
+# from llama_index.core.llms import ChatMessage
+# from rich.console import Console
+
+# from .os_detect import detect_shell
+# from .i18n import _, set_language
+# from .config import get_config
+# from .error import KnownError
+
+# SHELL_CODE_EXCLUSIONS = ["```bash", "```sh", "```zsh", "```powershell", "```", ""]
+
+# def get_gemini_llm(key: str, model: str) -> GoogleGenAI:
+#     """Initializes and returns the Gemini LLM instance."""
+#     if not key:
+#         raise KnownError(
+#             _("Please set your Google Gemini API key via `ai config set GOOGLE_API_KEY=<your_token>`")
+#         )
+#     # This is the updated, cleaner way to initialize the client.
+#     return GoogleGenAI(model=model, api_key=key)
+
+# def get_os_details() -> str:
+#     import platform
+#     return platform.system()
+
+# def get_shell_details() -> str:
+#     shell = detect_shell()
+#     return f"The target shell is {shell}"
+
+# def generate_completion_stream(
+#     prompt: str,
+#     key: str,
+#     model: str,
+# ) -> Generator[str, None, None]:
+#     """Generates a streaming completion from the Gemini API."""
+#     try:
+#         llm = get_gemini_llm(key, model)
+#         response_stream = llm.stream_chat([ChatMessage(role="user", content=prompt)])
+#         for r in response_stream:
+#             yield r.delta
+#     except Exception as e:
+#         raise KnownError(f"Error communicating with Google Gemini API: {e}")
+
+# def get_script_and_info(prompt: str, key: str, model: str) -> str:
+#     """Generates just the shell script from a prompt."""
+#     # full_prompt = textwrap.dedent(f"""
+#     #     Create a command that one can enter in a terminal and run, based on what is specified in the prompt.
+#     #     {get_shell_details()}
+#     #     Only reply with the single line command. It must be able to be directly run in the target shell. Do not include any other text, explanations, or code fences.
+#     #     Make sure the command runs on the {get_os_details()} operating system.
+#     #     The prompt is: {prompt}
+#     # """)
+#     full_prompt = textwrap.dedent(f"""
+#         You are an expert shell command generator. Based on the user's prompt, create a command or script block that can be run in a terminal.
+#         - The user's shell is: {get_shell_details()}.
+#         - The user's OS is: {get_os_details()}.
+
+#         RULES:
+#         1.  **For multi-line output, especially code, you MUST use a 'here document'.** The format is `cat << 'EOF' > /path/to/filename.py`.
+#         2.  The single-quoted `'EOF'` is MANDATORY to preserve indentation and prevent shell expansion of characters like `$`.
+#         3.  The code you generate inside the script must be correct, runnable, and follow best practices.
+#         4.  Reply ONLY with the command or script block. Do not include any other text, explanations, or markdown code fences.
+
+#         The user's prompt is: "{prompt}"
+#     """)
+#     llm = get_gemini_llm(key, model)
+#     response = llm.complete(full_prompt)
+#     return strip_code_fences(response.text)
+
+# def get_explanation(script: str, key: str, model: str) -> Generator[str, None, None]:
+#     """Generates an explanation for a given script."""
+#     config = get_config()
+#     set_language(config.get("LANGUAGE", "en"))
+
+#     prompt = textwrap.dedent(f"""
+#         Please provide a clear, concise description of the following script, using minimal words. Outline the steps in a list format.
+#         Please reply in the user's language: {_('Language')}
+#         The script is: {script}
+#     """)
+#     return generate_completion_stream(prompt, key, model)
+
+# def get_revision(prompt: str, code: str, key: str, model: str) -> str:
+#     """Generates a revised script based on user feedback."""
+#     full_prompt = textwrap.dedent(f"""
+#         Update the following script based on what is asked in the following prompt.
+#         The script: {code}
+#         The prompt: {prompt}
+#         {get_shell_details()}
+#         Only reply with the single line command. It must be able to be directly run in the target shell. Do not include any other text, explanations, or code fences.
+#     """)
+#     llm = get_gemini_llm(key, model)
+#     response = llm.complete(full_prompt)
+#     return strip_code_fences(response.text)
+
+# def strip_code_fences(text: str) -> str:
+#     """Removes markdown code fences from a string."""
+#     lines = text.strip().split('\n')
+#     # Filter out lines that are just code fences
+#     filtered_lines = [line for line in lines if not line.strip().startswith("```")]
+#     return "\n".join(filtered_lines).strip()
+
+
+# def read_stream_and_print(stream: Generator[str, None, None]) -> str:
+#     """Reads a generator stream, prints it to the console, and returns the full string."""
+#     full_response = ""
+#     console = Console()
+#     for chunk in stream:
+#         print(chunk, end="", flush=True)
+#         full_response += chunk
+#     return full_response
+# helpers/completion.py
 import os
+import json
 import textwrap
-from typing import Generator
+import re
+from typing import Generator, List, Dict, Any
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.core.llms import ChatMessage
 from rich.console import Console
@@ -9,17 +124,13 @@ from .os_detect import detect_shell
 from .i18n import _, set_language
 from .config import get_config
 from .error import KnownError
-from .context import get_system_context  # <--- New Import
-
-SHELL_CODE_EXCLUSIONS = ["```bash", "```sh", "```zsh", "```powershell", "```", ""]
+from .context import get_current_directory_context  # <--- IMPORTED
 
 def get_gemini_llm(key: str, model: str) -> GoogleGenAI:
-    """Initializes and returns the Gemini LLM instance."""
     if not key:
         raise KnownError(
             _("Please set your Google Gemini API key via `ai config set GOOGLE_API_KEY=<your_token>`")
         )
-    # This is the updated, cleaner way to initialize the client.
     return GoogleGenAI(model=model, api_key=key)
 
 def get_os_details() -> str:
@@ -30,45 +141,61 @@ def get_shell_details() -> str:
     shell = detect_shell()
     return f"The target shell is {shell}"
 
-def generate_completion_stream(
-    prompt: str,
-    key: str,
-    model: str,
-) -> Generator[str, None, None]:
-    """Generates a streaming completion from the Gemini API."""
-    try:
-        llm = get_gemini_llm(key, model)
-        response_stream = llm.stream_chat([ChatMessage(role="user", content=prompt)])
-        for r in response_stream:
-            yield r.delta
-    except Exception as e:
-        raise KnownError(f"Error communicating with Google Gemini API: {e}")
-
-def get_script_and_info(prompt: str, key: str, model: str) -> str:
-    """Generates just the shell script from a prompt."""
-    # full_prompt = textwrap.dedent(f"""
-    #     Create a command that one can enter in a terminal and run, based on what is specified in the prompt.
-    #     {get_shell_details()}
-    #     Only reply with the single line command. It must be able to be directly run in the target shell. Do not include any other text, explanations, or code fences.
-    #     Make sure the command runs on the {get_os_details()} operating system.
-    #     The prompt is: {prompt}
-    # """)
+def get_execution_plan(prompt: str, key: str, model: str) -> List[Dict[str, str]]:
+    """
+    Generates a multi-step execution plan in JSON format.
+    """
+    # 1. Gather System Context (Awareness)
+    fs_context = get_current_directory_context()
+    
+    # 2. Build the Prompt
     full_prompt = textwrap.dedent(f"""
-        You are an expert shell command generator. Based on the user's prompt, create a command or script block that can be run in a terminal.
-        - The user's shell is: {get_shell_details()}.
-        - The user's OS is: {get_os_details()}.
-
-        RULES:
-        1.  **For multi-line output, especially code, you MUST use a 'here document'.** The format is `cat << 'EOF' > /path/to/filename.py`.
-        2.  The single-quoted `'EOF'` is MANDATORY to preserve indentation and prevent shell expansion of characters like `$`.
-        3.  The code you generate inside the script must be correct, runnable, and follow best practices.
-        4.  Reply ONLY with the command or script block. Do not include any other text, explanations, or markdown code fences.
-
-        The user's prompt is: "{prompt}"
+        You are an expert DevOps engineer.
+        
+        USER REQUEST: "{prompt}"
+        
+        SYSTEM AWARENESS (Files actually on this computer):
+        {fs_context}
+        
+        CRITICAL RULES FOR FILE MATCHING:
+        1. IF the user mentions a file loosely (e.g. "hello", "script") AND you see a matching file in System Awareness (e.g. "hello.txt", "script.py"), YOU MUST USE THE EXISTING FILENAME.
+        2. Do not create new files if a file with a similar name already exists, unless explicitly asked.
+        3. Correct user typos based on the directory list (e.g. "dekstop" -> "Desktop").
+        
+        INSTRUCTIONS:
+        1. Analyze the request. 
+        2. Return a JSON LIST of steps.
+        
+        FORMAT:
+        [
+            {{
+                "description": "Brief text",
+                "command": "shell command"
+            }}
+        ]
+        
+        - OS: {get_os_details()}
+        - Shell: {get_shell_details()}
+        - Return ONLY valid JSON.
     """)
+
     llm = get_gemini_llm(key, model)
-    response = llm.complete(full_prompt)
-    return strip_code_fences(response.text)
+    response = llm.complete(full_prompt).text.strip()
+    
+    # Clean up potential markdown formatting from LLM
+    cleaned_response = strip_code_fences(response)
+    
+    try:
+        plan = json.loads(cleaned_response)
+        if isinstance(plan, list):
+            return plan
+        # If LLM returns a single object instead of a list
+        if isinstance(plan, dict):
+            return [plan]
+        raise ValueError("Invalid JSON format")
+    except Exception:
+        # Fallback: If JSON parsing fails, treat the whole response as one command
+        return [{"description": "Execute command", "command": cleaned_response}]
 
 def get_explanation(script: str, key: str, model: str) -> Generator[str, None, None]:
     """Generates an explanation for a given script."""
@@ -76,35 +203,32 @@ def get_explanation(script: str, key: str, model: str) -> Generator[str, None, N
     set_language(config.get("LANGUAGE", "en"))
 
     prompt = textwrap.dedent(f"""
-        Please provide a clear, concise description of the following script, using minimal words. Outline the steps in a list format.
-        Please reply in the user's language: {_('Language')}
-        The script is: {script}
+        Explain this command briefly:
+        {script}
     """)
-    return generate_completion_stream(prompt, key, model)
+    llm = get_gemini_llm(key, model)
+    response_stream = llm.stream_chat([ChatMessage(role="user", content=prompt)])
+    for r in response_stream:
+        yield r.delta
 
 def get_revision(prompt: str, code: str, key: str, model: str) -> str:
     """Generates a revised script based on user feedback."""
     full_prompt = textwrap.dedent(f"""
-        Update the following script based on what is asked in the following prompt.
-        The script: {code}
-        The prompt: {prompt}
+        Original Script: {code}
+        User Change Request: {prompt}
         {get_shell_details()}
-        Only reply with the single line command. It must be able to be directly run in the target shell. Do not include any other text, explanations, or code fences.
+        Return ONLY the updated shell command.
     """)
     llm = get_gemini_llm(key, model)
     response = llm.complete(full_prompt)
     return strip_code_fences(response.text)
 
 def strip_code_fences(text: str) -> str:
-    """Removes markdown code fences from a string."""
-    lines = text.strip().split('\n')
-    # Filter out lines that are just code fences
-    filtered_lines = [line for line in lines if not line.strip().startswith("```")]
-    return "\n".join(filtered_lines).strip()
-
+    """Removes markdown code fences and JSON markers."""
+    text = text.replace("```json", "").replace("```", "").strip()
+    return text
 
 def read_stream_and_print(stream: Generator[str, None, None]) -> str:
-    """Reads a generator stream, prints it to the console, and returns the full string."""
     full_response = ""
     console = Console()
     for chunk in stream:
