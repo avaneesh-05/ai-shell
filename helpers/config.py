@@ -10,11 +10,13 @@ DEFAULT_CONFIG = {
     "MODEL": "gemini-1.5-flash",
     "SILENT_MODE": False,
     "LANGUAGE": "en",
-    # === NEW EMAIL SETTINGS ===
-    "EMAIL_USER": None,      # Corresponds to EMAIL_SENDER in your old code
-    "EMAIL_PASSWORD": None,  # Corresponds to EMAIL_PASSWORD
+    # Email Defaults
+    "EMAIL_USER": None,
+    "EMAIL_PASSWORD": None,
     "SMTP_SERVER": "smtp.gmail.com",
     "SMTP_PORT": 465,
+    # Security Defaults
+    "SECURITY_PIN": "1234"
 }
 
 def get_config() -> Dict[str, Any]:
@@ -39,12 +41,9 @@ def set_configs(key_values: List[Tuple[str, str]]):
     """Sets one or more configuration values."""
     config = get_config()
     for key, value in key_values:
-        if key.upper() not in DEFAULT_CONFIG:
-            raise KnownError(f"{_('Invalid config property')}: {key}")
-        
         # Coerce boolean strings to booleans
-        if value.lower() in ["true", "false"]:
-            config[key.upper()] = value.lower() == "true"
+        if str(value).lower() in ["true", "false"]:
+            config[key.upper()] = str(value).lower() == "true"
         else:
             config[key.upper()] = value
 
@@ -52,5 +51,4 @@ def set_configs(key_values: List[Tuple[str, str]]):
         json.dump(config, f, indent=2)
 
 def has_own(obj: Dict, key: str) -> bool:
-    """Checks if a key exists in a dictionary."""
     return key in obj

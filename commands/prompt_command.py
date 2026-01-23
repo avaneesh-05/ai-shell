@@ -24,6 +24,7 @@ from helpers.i18n import _, set_language
 from helpers.shell_history import append_to_shell_history
 from helpers.error import KnownError
 from helpers.email_workflow import handle_email_intent
+from helpers.security import is_risky_command, verify_identity
 
 # Create a dedicated Typer app for the 'prompt' command
 prompt_app = typer.Typer(
@@ -184,3 +185,20 @@ def run_or_revise_flow(script: str, key: str, model: str, silent_mode: bool):
         elif action == "cancel" or action is None:
             console.print(f"[yellow]{_('Goodbye!')}[/yellow]")
             break
+
+def run_script(script: str):
+    console.print(f"\n[dim]{_('Running')}: {script}[/dim]\n")
+    
+    # === SECURITY CHECK ===
+    if is_risky_command(script):
+        if not verify_identity():
+            return # Stop execution if PIN is wrong
+    # ======================
+
+    try:
+        subprocess.run(script, shell=True, check=True, executable=os.environ.get("SHELL"))
+        append_to_shell_history(script)
+    except subprocess.CalledProcessError:
+        console.print("[red]✖ Script finished with a non-zero exit code.[/red]")
+    except Exception as e:
+        console.print(f"[red]✖ Failed to run script: {e}[/red]")

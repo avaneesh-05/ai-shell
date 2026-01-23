@@ -1,5 +1,6 @@
 import typer
 from rich.console import Console
+from rich.panel import Panel
 import questionary
 from typing_extensions import Annotated
 
@@ -7,8 +8,6 @@ from helpers.config import get_config, set_configs, has_own, DEFAULT_CONFIG
 from helpers.error import KnownError
 from helpers.i18n import _
 
-# The `invoke_without_command=True` is the key fix.
-# It tells Typer that `ai config` can be run without needing another subcommand.
 config_app = typer.Typer(
     help="Configure the CLI.",
     no_args_is_help=True,
@@ -20,11 +19,8 @@ console = Console()
 def main(
     ctx: typer.Context,
     mode: Annotated[str, typer.Argument(help="The mode: 'get', 'set', or 'ui'.")] = "ui",
-    key_values: Annotated[list[str], typer.Argument(help="Key-value pairs to set, e.g., 'MODEL=gemini-pro'.")] = None,
+    key_values: Annotated[list[str], typer.Argument(help="Key-value pairs.")] = None,
 ):
-    """
-    Manages CLI configuration. Defaults to UI mode if no mode is specified.
-    """
     if ctx.invoked_subcommand is not None:
         return
 
@@ -32,21 +28,13 @@ def main(
         run_config_ui()
     elif mode == 'get':
         if not key_values:
-            raise KnownError(f"{_('Error')}: {_('Missing required parameter')} 'key'")
+            raise KnownError("Missing parameter 'key'")
         config_get(key_values)
     elif mode == 'set':
         if not key_values:
-            raise KnownError(f"{_('Error')}: {_('Missing required parameter')} 'key=value'")
-
-        pairs = []
-        for kv in key_values:
-            if '=' not in kv:
-                raise KnownError(f"Invalid format for 'set'. Use 'key=value'.")
-            pairs.append(tuple(kv.split('=', 1)))
-
+            raise KnownError("Missing parameter 'key=value'")
+        pairs = [tuple(kv.split('=', 1)) for kv in key_values if '=' in kv]
         config_set(pairs)
-    else:
-        raise KnownError(f"{_('Invalid mode')}: {mode}")
 
 def config_get(keys: list[str]):
     config = get_config()
@@ -55,48 +43,61 @@ def config_get(keys: list[str]):
         if has_own(config, key_upper):
             console.print(f"{key_upper}={config[key_upper]}")
         else:
-            raise KnownError(f"{_('Invalid config property')}: {key}")
+            raise KnownError(f"Invalid property: {key}")
 
 def config_set(pairs: list[tuple[str, str]]):
     set_configs(pairs)
     console.print("[green]✔ Config updated.[/green]")
 
 def run_config_ui():
-    """An interactive UI for setting configuration."""
+    """Interactive UI for configuration (API, Email, Security)."""
     config = get_config()
 
     try:
-        api_key = questionary.text(
-            _('Enter your Google Gemini API key'),
-            default=config.get("GOOGLE_API_KEY") or "",
-        ).ask()
+        console.print(Panel("[bold]AI Shell Configuration[/bold]", style="blue"))
 
-        model = questionary.text(
-            _('Enter the model you want to use'),
-            default=config.get("MODEL", DEFAULT_CONFIG["MODEL"]),
-        ).ask()
+        # 1. API & General
+        api_key = questionary.text("Google Gemini API Key:", default=config.get("GOOGLE_API_KEY") or "").ask()
+        model = questionary.text("Model:", default=config.get("MODEL", "gemini-1.5-flash")).ask()
+        
+        # 2. Email Config
+        configure_email = questionary.confirm("Configure Email settings?", default=False).ask()
+        email_user = config.get("EMAIL_USER")
+        email_pass = config.get("EMAIL_PASSWORD")
+        
+        if configure_email:
+            email_user = questionary.text("Email Address:", default=config.get("EMAIL_USER") or "").ask()
+            email_pass = questionary.password("Email App Password:", default=config.get("EMAIL_PASSWORD") or "").ask()
 
-        silent_mode = questionary.confirm(
-            _('Enable silent mode?'),
-            default=config.get("SILENT_MODE", DEFAULT_CONFIG["SILENT_MODE"]),
-        ).ask()
+        # 3. Security Config (PIN Change)
+        change_pin = questionary.confirm("Change Security PIN?", default=False).ask()
+        new_pin_val = config.get("SECURITY_PIN", "1234")
 
-        language = questionary.text(
-            _('Enter the language you want to use'),
-            default=config.get("LANGUAGE", DEFAULT_CONFIG["LANGUAGE"]),
-        ).ask()
+        if change_pin:
+            current_stored = str(config.get("SECURITY_PIN", "1234"))
+            entered_old = questionary.password("Enter Current PIN:").ask()
+            
+            if entered_old == current_stored:
+                p1 = questionary.password("Enter New PIN:").ask()
+                p2 = questionary.password("Confirm New PIN:").ask()
+                if p1 == p2 and p1:
+                    new_pin_val = p1
+                    console.print("[green]✔ PIN updated in memory (save to apply).[/green]")
+                else:
+                    console.print("[red]✖ PINs do not match. Keeping old PIN.[/red]")
+            else:
+                console.print("[red]✖ Incorrect Current PIN. Cannot change.[/red]")
 
-        if api_key is not None and model is not None and silent_mode is not None and language is not None:
+        # Save All
+        if api_key:
              set_configs([
                 ("GOOGLE_API_KEY", api_key),
                 ("MODEL", model),
-                ("SILENT_MODE", str(silent_mode)),
-                ("LANGUAGE", language),
+                ("EMAIL_USER", email_user),
+                ("EMAIL_PASSWORD", email_pass),
+                ("SECURITY_PIN", new_pin_val)
             ])
-             console.print("[green]✔ Config saved.[/green]")
-        else:
-            console.print(f"\n[yellow]{_('Goodbye!')}[/yellow]")
+             console.print("\n[green]✔ Configuration successfully saved![/green]")
 
-
-    except (KeyboardInterrupt):
-        console.print(f"\n[yellow]{_('Goodbye!')}[/yellow]")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelled.[/yellow]")

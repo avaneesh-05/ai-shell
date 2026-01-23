@@ -9,6 +9,7 @@ from .os_detect import detect_shell
 from .i18n import _, set_language
 from .config import get_config
 from .error import KnownError
+from .context import get_system_context  # <--- New Import
 
 SHELL_CODE_EXCLUSIONS = ["```bash", "```sh", "```zsh", "```powershell", "```", ""]
 
