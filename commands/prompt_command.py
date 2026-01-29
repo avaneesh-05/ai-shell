@@ -244,16 +244,37 @@ def _execute_prompt(use_prompt: str = "", silent_mode: bool = False):
         if not key:
             raise KnownError(_("Please set your Google Gemini API key via `ai config set GOOGLE_API_KEY=<your_token>`"))
 
-        # 1. Intent Detection (Email)
+        # 1. Intent Detection (Email) - but avoid triggering on file-listing/inspection queries
         if use_prompt and use_prompt.strip():
             classifier_llm = GoogleGenAI(model=model, api_key=key)
             classification = classifier_llm.complete(
-                f"Analyze: '{use_prompt}'. Does the user want to send email have they mentioned it? Reply YES_EMAIL or NO."
+                f"""Analyze this user request: "{use_prompt}"
+                
+CONTEXT: The user is asking a CLI assistant (ai-shell) to perform a task.
+
+Your task: Determine the REQUEST INTENT and answer strictly with YES_EMAIL or NO_LISTING or NO.
+
+- Reply YES_EMAIL ONLY if the user explicitly wants to DRAFT or SEND an email/mail message.
+- Reply NO_LISTING if the user is asking to LIST/SEARCH/FIND files (e.g., "what .py files", "list files related to", "show me files", "find all").
+- Reply NO for all other requests (create files, run commands, general tasks, etc).
+
+Examples:
+  "what .py files related to email" → NO_LISTING
+  "show me all email functions" → NO_LISTING
+  "send an email to john@example.com" → YES_EMAIL
+  "draft a professional email" → YES_EMAIL
+  "list all .py files" → NO_LISTING
+  "find files in project" → NO_LISTING
+  "delete all .tmp files" → NO
+  
+Respond ONLY with: YES_EMAIL or NO_LISTING or NO"""
             ).text.strip().upper()
 
             if "YES_EMAIL" in classification:
                 handle_email_intent(use_prompt)
                 return
+            # If it's a file-listing query, just let it go through to execution plan
+            # (the LLM will handle it better now with improved prompts)
 
         console.print(Panel(f"[bold cyan]{project_name}[/bold cyan]", expand=False, border_style="dim"))
 

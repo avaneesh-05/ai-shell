@@ -11,6 +11,8 @@ from helpers.i18n import _
 
 console = Console()
 
+MAX_CLARIFYING_QUESTIONS = 4
+
 def ensure_email_config():
     """Checks configuration. If exists, asks user to confirm or switch."""
     config = get_config()
@@ -47,9 +49,142 @@ def ensure_email_config():
     console.print("[green]✔ New credentials saved![/green]\n")
     return get_config()
 
-def iterative_draft_update(current_draft, user_input, key, model, history_str, is_first_turn=False, mode="DRAFT"):
+def extract_subject_and_body(draft_text):
+    """Extract subject and body from draft text."""
+    lines = draft_text.strip().split('\n')
+    subject = "No Subject"
+    body = draft_text
+    
+    for i, line in enumerate(lines):
+        if line.lower().startswith("subject:"):
+            subject = line.split(":", 1)[1].strip()
+            body = "\n".join(lines[i+1:]).strip()
+            break
+    
+    return subject, body
+
+def generate_initial_draft(user_input, key, model):
+    """Generate the initial email draft skeleton."""
+    llm = GoogleGenAI(model=model, api_key=key)
+    
+    system_prompt = textwrap.dedent(f"""
+        You are an expert email drafter.
+        
+        User Request: "{user_input}"
+        
+        Task:
+        1. Create a professional email skeleton with Subject and Body.
+        2. Format as: Subject: [subject line]\\n\\n[body text]
+        3. Use 2-3 sentences initially as a starting point.
+        4. Prepare ONE specific, actionable clarifying question to gather more details.
+        
+        Respond ONLY with JSON (no markdown, no code blocks):
+        {{"draft": "Subject: ...\\n\\n...", "question": "Your specific question here"}}
+    """)
+    
+    try:
+        response = llm.complete(system_prompt).text.strip()
+        # Remove markdown code fences if present
+        if response.startswith("```"):
+            response = response.split("```")[1]
+            if response.startswith("json"):
+                response = response[4:]
+            response = response.strip()
+        
+        result = json.loads(response)
+        return result.get("draft", ""), result.get("question", "")
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not parse initial draft. {str(e)}[/yellow]")
+        return f"Subject: Email\n\n{user_input}", "What specific details should I include?"
+
+def refine_draft(current_draft, user_answer, question_history, key, model, question_count):
+    """Refine the draft based on user's answer to a clarifying question."""
+    llm = GoogleGenAI(model=model, api_key=key)
+    
+    # Build context of previous Q&A
+    context_history = "\n".join(question_history)
+    
+    # Determine if we should ask another question
+    should_continue = question_count < (MAX_CLARIFYING_QUESTIONS - 1)
+    
+    system_prompt = textwrap.dedent(f"""
+        You are an expert email editor and drafter.
+        
+        CURRENT DRAFT:
+        {current_draft}
+        
+        CONVERSATION HISTORY:
+        {context_history}
+        
+        USER'S LATEST ANSWER: "{user_answer}"
+        QUESTIONS ASKED SO FAR: {question_count} out of {MAX_CLARIFYING_QUESTIONS}
+        
+        Task:
+        1. Integrate the user's answer naturally into the draft.
+        2. Improve clarity, tone, and completeness.
+        3. Identify gaps that still need addressing.
+        4. Format as: Subject: [subject line]\\n\\n[body text]
+        5. Create the NEXT clarifying question (or indicate if draft is complete).
+        
+        CRITICAL RULES:
+        - Do NOT repeat questions already asked in the conversation history
+        - Focus on: tone/formality, specific details, recipient details, action items, urgency, closing style
+        - Keep questions specific and actionable
+        - If we've asked {MAX_CLARIFYING_QUESTIONS} questions, ask if they want any final improvements before sending
+        
+        Respond ONLY with JSON (no markdown, no code blocks):
+        {{"draft": "Subject: ...\\n\\n...", "question": "Next question or null if ready for final review"}}
+    """)
+    
+    try:
+        response = llm.complete(system_prompt).text.strip()
+        # Remove markdown code fences if present
+        if response.startswith("```"):
+            response = response.split("```")[1]
+            if response.startswith("json"):
+                response = response[4:]
+            response = response.strip()
+        
+        result = json.loads(response)
+        return result.get("draft", current_draft), result.get("question")
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not refine draft. {str(e)}[/yellow]")
+        return current_draft, None
+
+def apply_improvements(current_draft, improvement_request, key, model):
+    """Apply user-requested improvements to the draft."""
+    llm = GoogleGenAI(model=model, api_key=key)
+    
+    system_prompt = textwrap.dedent(f"""
+        You are an expert email editor.
+        
+        CURRENT DRAFT:
+        {current_draft}
+        
+        USER IMPROVEMENT REQUEST: "{improvement_request}"
+        
+        Task:
+        1. Apply the improvement request to the draft.
+        2. Maintain the original intent and content.
+        3. Format as: Subject: [subject line]\\n\\n[body text]
+        
+        Respond ONLY with the improved draft (no JSON, no explanation):
+        Subject: [subject]
+        
+        [body]
+    """)
+    
+    try:
+        response = llm.complete(system_prompt).text.strip()
+        return response
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not apply improvements. {str(e)}[/yellow]")
+        return current_draft
+
+def iterative_draft_update(current_draft, user_input, key, model, history_str, is_first_turn=False, mode="DRAFT", question_count=0):
     """
     Handles drafting/editing with FULL CONTEXT awareness.
+    Ensures intelligent iterative refinement with multiple clarifying questions.
     """
     llm = GoogleGenAI(model=model, api_key=key)
     
@@ -74,13 +209,19 @@ def iterative_draft_update(current_draft, user_input, key, model, history_str, i
             User Request: "{user_input}"
             
             Task:
-            1. Draft a professional email. Use placeholders like [Date] if details are missing.
-            2. Formulate ONE critical question to fill the biggest gap.
+            1. Draft a professional email skeleton. Use placeholders like [Recipient Name], [Specific Detail] if needed.
+            2. Formulate ONE specific, actionable question to gather more details and improve the email.
+            3. The question should help you understand tone, specific details, or purpose better.
+            4. ALWAYS set status to "CONTINUE" - we will ask multiple questions to refine the draft.
             
             Output JSON ONLY:
-            {{ "draft": "...", "question": "Question text", "status": "CONTINUE" }}
+            {{ "draft": "...", "question": "Your specific question here", "status": "CONTINUE" }}
         """)
     else:
+        # Determine if we should continue asking or mark as complete
+        # Ask at least 3-4 questions before allowing completion
+        should_continue = question_count < 3
+        
         system_prompt = textwrap.dedent(f"""
             You are an expert email drafter.
             
@@ -91,29 +232,48 @@ def iterative_draft_update(current_draft, user_input, key, model, history_str, i
             {current_draft}
             
             LATEST USER ANSWER: "{user_input}"
+            QUESTIONS ASKED SO FAR: {question_count}
             
             Task:
-            1. Update the draft with the Latest User Answer.
-            2. Check for remaining placeholders (e.g., [Name], [Date]).
-            3. Formulate the NEXT question.
-            4. CRITICAL RULE: DO NOT ask a question that is already in the CONTEXT HISTORY.
-            5. If no important details are missing, set status to COMPLETE.
+            1. Integrate the Latest User Answer into the draft naturally.
+            2. Check for remaining gaps or improvements needed.
+            3. Formulate the NEXT question to further refine the email.
+            4. CRITICAL RULES:
+               - DO NOT ask a question that is already answered in CONTEXT HISTORY
+               - Ask questions about: tone/formality, specific details, recipient details, action items, urgency, closing style, etc.
+               - Keep questions specific and actionable
+            5. Set status to "CONTINUE" if there are more questions to ask OR if user's answer was brief/incomplete
+            6. Set status to "COMPLETE" only if the email feels complete, personalized, and ready
             
             Output JSON ONLY:
-            {{ "draft": "...", "question": "Next question", "status": "CONTINUE" or "COMPLETE" }}
+            {{ "draft": "...", "question": "Next specific question", "status": "CONTINUE" or "COMPLETE" }}
         """)
 
     try:
         response = llm.complete(system_prompt).text.strip()
         if response.startswith("```"):
             response = response.strip("`").replace("json", "").strip()
-        return json.loads(response)
+        result = json.loads(response)
+        
+        # For first turn, ensure we always continue
+        if is_first_turn:
+            result["status"] = "CONTINUE"
+            
+        return result
     except Exception:
         return {"draft": current_draft, "question": None, "status": "COMPLETE"}
 
+
 def handle_email_intent(user_prompt: str):
     """
-    Main Flow with History Tracking and Live Previews.
+    Main Email Workflow with Intelligent Iterative Drafting.
+    Flow:
+    1. Get recipient(s)
+    2. Generate initial draft
+    3. Ask up to 4 clarifying questions to refine draft
+    4. Show final draft
+    5. Allow improvements before sending
+    6. Send when confirmed
     """
     config = ensure_email_config()
     key = config.get("GOOGLE_API_KEY")
@@ -129,95 +289,112 @@ def handle_email_intent(user_prompt: str):
     recipient_list = [r.strip() for r in recipients_input.split(',') if r.strip()]
     recipients_display = ", ".join(recipient_list)
 
-    # State Variables
-    current_draft = ""
-    next_question = None
-    status = "CONTINUE"
-    user_input = user_prompt
-    is_first = True
-    history = [] 
+    # ===== PHASE 1: GENERATE INITIAL DRAFT =====
+    console.print(f"\n[bold cyan]📧 Drafting your email...[/bold cyan]\n")
+    
+    with console.status("[cyan]Generating initial draft...[/cyan]"):
+        current_draft, next_question = generate_initial_draft(user_prompt, key, model)
+    
+    question_count = 0
+    question_history = [f"User Request: {user_prompt}"]
 
-    console.print(f"\n[bold cyan]Drafting your email...[/bold cyan]")
-
-    while status == "CONTINUE":
-        history_str = "\n".join(history)
+    # ===== PHASE 2: ITERATIVE CLARIFYING QUESTIONS (Max 4) =====
+    while question_count < MAX_CLARIFYING_QUESTIONS and next_question:
+        question_count += 1
         
-        with console.status("[cyan]Updating draft...[/cyan]"):
-            result = iterative_draft_update(current_draft, user_input, key, model, history_str, is_first, mode="DRAFT")
+        # Show current draft
+        subject, body = extract_subject_and_body(current_draft)
+        console.print(Panel(
+            f"[bold]To:[/bold] {recipients_display}\n[bold]Subject:[/bold] {subject}\n\n{body}",
+            title=f"📝 Draft (Question {question_count}/{MAX_CLARIFYING_QUESTIONS})",
+            style="dim blue"
+        ))
         
-        current_draft = result.get("draft", "")
-        next_question = result.get("question")
-        status = result.get("status", "COMPLETE")
+        # Ask clarifying question
+        console.print(f"\n[bold cyan]Question {question_count}/{MAX_CLARIFYING_QUESTIONS}:[/bold cyan]")
+        user_answer = questionary.text(next_question).ask()
         
-        # Log Interaction
-        if is_first:
-            history.append(f"User Request: {user_input}")
-        else:
-            history.append(f"User Answer: {user_input}")
-        is_first = False
-
-        if status == "COMPLETE" or not next_question:
+        if not user_answer or user_answer.lower() in ["skip", "done", "no"]:
             break
+        
+        question_history.append(f"AI Question: {next_question}")
+        question_history.append(f"User Answer: {user_answer}")
+        
+        # Refine draft based on answer
+        with console.status("[cyan]Refining draft...[/cyan]"):
+            current_draft, next_question = refine_draft(
+                current_draft, 
+                user_answer, 
+                question_history, 
+                key, 
+                model, 
+                question_count
+            )
 
-        # Log Question
-        history.append(f"AI Question: {next_question}")
-
-        # === NEW: Show the Rough Draft ===
-        # This panel shows the user exactly what the AI has written so far
-        console.print(Panel(current_draft, title="Current Working Draft", style="dim blue"))
-        # =================================
-
-        # Ask the user
-        user_input = questionary.text(f"❓ {next_question}").ask()
-        if not user_input or user_input.lower() in ["skip", "done"]:
-            status = "COMPLETE"
-
-    # Final Review Loop
+    # ===== PHASE 3: FINAL REVIEW & IMPROVEMENT LOOP =====
     while True:
-        lines = current_draft.strip().split('\n')
-        subject = "No Subject"
-        body = current_draft
-        for i, line in enumerate(lines):
-            if line.lower().startswith("subject:"):
-                subject = line.split(":", 1)[1].strip()
-                body = "\n".join(lines[i+1:]).strip()
-                break
-
-        console.print(Panel(f"[bold]To:[/bold] {recipients_display}\n[bold]Subject:[/bold] {subject}\n\n{body}", title="Final Review", border_style="green"))
+        subject, body = extract_subject_and_body(current_draft)
+        
+        console.print("\n" + "="*80)
+        console.print(Panel(
+            f"[bold]To:[/bold] {recipients_display}\n[bold]Subject:[/bold] {subject}\n\n{body}",
+            title="✅ Final Email Draft",
+            border_style="green"
+        ))
         
         action = questionary.select(
-            "What next?",
+            "\nWhat would you like to do?",
             choices=[
-                questionary.Choice("✅ Send Email", value="send"),
-                questionary.Choice("✨ AI Edit / Refine", value="ai_edit"),
-                questionary.Choice("📝 Manual Edit Body", value="edit_body"),
-                questionary.Choice("✏️ Manual Edit Subject", value="edit_subject"),
-                questionary.Choice("❌ Cancel", value="cancel"),
+                questionary.Choice("🚀 Send Email Now", value="send"),
+                questionary.Choice("✨ Request Improvements", value="improve"),
+                questionary.Choice("📝 Manually Edit Body", value="edit_body"),
+                questionary.Choice("✏️ Edit Subject", value="edit_subject"),
+                questionary.Choice("❌ Cancel & Discard", value="cancel"),
             ]
         ).ask()
 
         if action == "send":
-            with console.status("[cyan]Sending...[/cyan]"):
-                send_email_via_smtp(recipient_list, subject, body, config)
-            console.print(f"[green]✔ Email sent to {len(recipient_list)} recipient(s)![/green]")
-            break
+            # Final confirmation
+            confirm_send = questionary.confirm(
+                "\n🔒 Are you sure you want to send this email?",
+                default=True
+            ).ask()
             
-        elif action == "ai_edit":
-            instruction = questionary.text("What should I change?").ask()
-            if instruction:
-                with console.status("[cyan]Refining draft...[/cyan]"):
-                    full_text = f"Subject: {subject}\n\n{body}"
-                    result = iterative_draft_update(full_text, instruction, key, model, "", mode="EDIT")
-                    current_draft = result.get("draft", current_draft)
-                    
+            if confirm_send:
+                with console.status("[cyan]Sending email...[/cyan]"):
+                    send_email_via_smtp(recipient_list, subject, body, config)
+                console.print(f"\n[green]✔ Email sent to {len(recipient_list)} recipient(s)![/green]")
+                break
+            # If not confirmed, stay in review loop
+            
+        elif action == "improve":
+            improvement_request = questionary.text(
+                "\n✨ What improvements would you like?\n(e.g., 'make it more formal', 'add humor', 'shorten it', 'emphasize urgency')"
+            ).ask()
+            
+            if improvement_request:
+                with console.status("[cyan]Applying improvements...[/cyan]"):
+                    current_draft = apply_improvements(current_draft, improvement_request, key, model)
+                
+                console.print("[green]✔ Draft updated![/green]")
+                # Loop back to show updated draft
+                continue
+            
         elif action == "edit_body":
-            body = questionary.text("Edit Body:", default=body, multiline=True).ask()
+            body = questionary.text(
+                "Edit email body:",
+                default=body,
+                multiline=True
+            ).ask()
             current_draft = f"Subject: {subject}\n\n{body}"
             
         elif action == "edit_subject":
-            subject = questionary.text("Edit Subject:", default=subject).ask()
+            subject = questionary.text(
+                "Edit subject line:",
+                default=subject
+            ).ask()
             current_draft = f"Subject: {subject}\n\n{body}"
             
-        else:
-            console.print("[yellow]Cancelled.[/yellow]")
+        else:  # cancel
+            console.print("[yellow]Email discarded. Goodbye![/yellow]")
             break

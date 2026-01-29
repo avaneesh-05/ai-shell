@@ -148,35 +148,60 @@ def get_execution_plan(prompt: str, key: str, model: str) -> List[Dict[str, str]
     # 1. Gather System Context (Awareness)
     fs_context = get_current_directory_context()
     
-    # 2. Build the Prompt
+    # 2. Build the Prompt with Enhanced Context Awareness
     full_prompt = textwrap.dedent(f"""
-        You are an expert DevOps engineer.
+        You are an expert DevOps engineer with exceptional context awareness.
         
         USER REQUEST: "{prompt}"
         
         SYSTEM AWARENESS (Files actually on this computer):
         {fs_context}
         
-        CRITICAL RULES FOR FILE MATCHING:
+        CRITICAL CONTEXT ANALYSIS (READ THIS FIRST):
+        =============================================
+        BEFORE generating a plan, determine the REQUEST TYPE:
+        
+        REQUEST TYPE A: FILE LISTING / INSPECTION QUERIES
+        - User asks: "what files", "which files", "list files", "show files", "what .py files", etc.
+        - User wants: A list of files matching certain criteria (e.g., related to email, containing keywords)
+        - YOUR ACTION: Generate a single grep/find command that lists matching files
+        - EXAMPLE: User: "what .py files are related to email?"
+                   Response: [{{ "description": "Find email-related Python files", "command": "find . -name '*.py' | xargs grep -l 'email\\|smtp\\|send_email' | grep -v __pycache__" }}]
+        - DO NOT trigger any email workflows, config UI, or auxiliary features
+        - Return clean, working commands with proper escaping
+        
+        REQUEST TYPE B: TASK EXECUTION / MODIFICATIONS
+        - User asks: "delete files", "create a script", "install package", "modify config", "send email", etc.
+        - User wants: Multi-step execution plan to accomplish a specific task
+        - YOUR ACTION: Generate step-by-step plan with descriptions and commands
+        
+        REQUEST TYPE C: CODE/PROJECT ANALYSIS
+        - User asks: "analyze this feature", "explain how this works", "refactor this code", etc.
+        - User wants: Understanding of code structure, not execution
+        - YOUR ACTION: Return a description with relevant file paths and no shell commands
+        
+        RULES FOR FILE MATCHING:
         1. IF the user mentions a file loosely (e.g. "hello", "script") AND you see a matching file in System Awareness (e.g. "hello.txt", "script.py"), YOU MUST USE THE EXISTING FILENAME.
         2. Do not create new files if a file with a similar name already exists, unless explicitly asked.
         3. Correct user typos based on the directory list (e.g. "dekstop" -> "Desktop").
         
         INSTRUCTIONS:
-        1. Analyze the request. 
-        2. Return a JSON LIST of steps.
+        1. Identify REQUEST TYPE from the user request above.
+        2. Generate appropriate response based on type.
+        3. Return a JSON LIST of steps (even for single-step operations).
+        4. Ensure shell commands are properly escaped and will run without syntax errors.
         
         FORMAT:
         [
             {{
-                "description": "Brief text",
-                "command": "shell command"
+                "description": "Brief text describing this step",
+                "command": "shell command or result"
             }}
         ]
         
         - OS: {get_os_details()}
         - Shell: {get_shell_details()}
-        - Return ONLY valid JSON.
+        - Return ONLY valid JSON. No markdown, no explanations outside JSON.
     """)
 
     llm = get_gemini_llm(key, model)
