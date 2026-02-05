@@ -7,7 +7,7 @@ from .error import KnownError
 CONFIG_PATH = Path.home() / ".ai_shell_config.json"
 DEFAULT_CONFIG = {
     "GOOGLE_API_KEY": None,
-    "MODEL": "gemini-1.5-flash",
+    "MODEL": "gemini-2.0-flash",
     "SILENT_MODE": False,
     "LANGUAGE": "en",
     # Email Defaults

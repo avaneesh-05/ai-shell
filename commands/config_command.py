@@ -58,7 +58,7 @@ def run_config_ui():
 
         # 1. API & General
         api_key = questionary.text("Google Gemini API Key:", default=config.get("GOOGLE_API_KEY") or "").ask()
-        model = questionary.text("Model:", default=config.get("MODEL", "gemini-1.5-flash")).ask()
+        model = questionary.text("Model:", default=config.get("MODEL") or "gemini-2.0-flash").ask()
         
         # 2. Email Config
         configure_email = questionary.confirm("Configure Email settings?", default=False).ask()
