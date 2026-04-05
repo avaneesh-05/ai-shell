@@ -225,6 +225,7 @@ from helpers.i18n import _, set_language
 from helpers.shell_history import append_to_shell_history
 from helpers.error import KnownError
 from helpers.email_workflow import handle_email_intent
+from helpers.github_workflow import handle_github_intent
 from helpers.security import is_risky_command, verify_identity
 from llama_index.llms.google_genai import GoogleGenAI
 
@@ -252,9 +253,10 @@ def _execute_prompt(use_prompt: str = "", silent_mode: bool = False):
                 
 CONTEXT: The user is asking a CLI assistant (ai-shell) to perform a task.
 
-Your task: Determine the REQUEST INTENT and answer strictly with YES_EMAIL or NO_LISTING or NO.
+Your task: Determine the REQUEST INTENT and answer strictly with one of: YES_EMAIL, YES_GITHUB, NO_LISTING, or NO.
 
 - Reply YES_EMAIL ONLY if the user explicitly wants to DRAFT or SEND an email/mail message.
+- Reply YES_GITHUB if the user wants to CLONE, DOWNLOAD, or GET a GitHub or GitLab repository (e.g., "clone this repo", "download github repo", "get me the gitlab repo", "clone gitlab.com/...").
 - Reply NO_LISTING if the user is asking to LIST/SEARCH/FIND files (e.g., "what .py files", "list files related to", "show me files", "find all").
 - Reply NO for all other requests (create files, run commands, general tasks, etc).
 
@@ -263,15 +265,25 @@ Examples:
   "show me all email functions" → NO_LISTING
   "send an email to john@example.com" → YES_EMAIL
   "draft a professional email" → YES_EMAIL
+  "clone https://github.com/user/repo" → YES_GITHUB
+  "download github repo user/repo" → YES_GITHUB
+  "get me the repo at github.com/user/repo" → YES_GITHUB
+  "clone https://gitlab.com/org/project" → YES_GITHUB
+  "download gitlab repo org/project" → YES_GITHUB
+  "get the gitlab repo org/tool" → YES_GITHUB
   "list all .py files" → NO_LISTING
   "find files in project" → NO_LISTING
   "delete all .tmp files" → NO
   
-Respond ONLY with: YES_EMAIL or NO_LISTING or NO"""
+Respond ONLY with: YES_EMAIL or YES_GITHUB or NO_LISTING or NO"""
             ).text.strip().upper()
 
             if "YES_EMAIL" in classification:
                 handle_email_intent(use_prompt)
+                return
+
+            if "YES_GITHUB" in classification:
+                handle_github_intent(use_prompt)
                 return
             # If it's a file-listing query, just let it go through to execution plan
             # (the LLM will handle it better now with improved prompts)
