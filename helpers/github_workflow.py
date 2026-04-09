@@ -5,7 +5,7 @@ import textwrap
 import questionary
 from rich.console import Console
 from rich.panel import Panel
-from llama_index.llms.google_genai import GoogleGenAI
+from .completion import get_gemini_llm
 
 from helpers.config import get_config
 from helpers.github_cloner import clone_repo
@@ -33,7 +33,7 @@ def extract_repo_info(user_prompt: str, key: str, model: str) -> dict:
     Uses the LLM to extract GitHub/GitLab repository information from a natural language prompt.
     Returns a dict with 'url', 'owner', 'repo_name', 'platform' keys.
     """
-    llm = GoogleGenAI(model=model, api_key=key)
+    llm = get_gemini_llm(key, model)
 
     system_prompt = textwrap.dedent(f"""
         You are a Git repository URL extractor. You support both GitHub and GitLab.

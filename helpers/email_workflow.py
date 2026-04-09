@@ -3,7 +3,7 @@ import textwrap
 import json
 from rich.console import Console
 from rich.panel import Panel
-from llama_index.llms.google_genai import GoogleGenAI
+from .completion import get_gemini_llm
 
 from helpers.config import get_config, set_configs
 from helpers.email_sender import send_email_via_smtp
@@ -65,7 +65,7 @@ def extract_subject_and_body(draft_text):
 
 def generate_initial_draft(user_input, key, model):
     """Generate the initial email draft skeleton."""
-    llm = GoogleGenAI(model=model, api_key=key)
+    llm = get_gemini_llm(key, model)
     
     system_prompt = textwrap.dedent(f"""
         You are an expert email drafter.
@@ -99,7 +99,7 @@ def generate_initial_draft(user_input, key, model):
 
 def refine_draft(current_draft, user_answer, question_history, key, model, question_count):
     """Refine the draft based on user's answer to a clarifying question."""
-    llm = GoogleGenAI(model=model, api_key=key)
+    llm = get_gemini_llm(key, model)
     
     # Build context of previous Q&A
     context_history = "\n".join(question_history)
@@ -153,7 +153,7 @@ def refine_draft(current_draft, user_answer, question_history, key, model, quest
 
 def apply_improvements(current_draft, improvement_request, key, model):
     """Apply user-requested improvements to the draft."""
-    llm = GoogleGenAI(model=model, api_key=key)
+    llm = get_gemini_llm(key, model)
     
     system_prompt = textwrap.dedent(f"""
         You are an expert email editor.
@@ -186,7 +186,7 @@ def iterative_draft_update(current_draft, user_input, key, model, history_str, i
     Handles drafting/editing with FULL CONTEXT awareness.
     Ensures intelligent iterative refinement with multiple clarifying questions.
     """
-    llm = GoogleGenAI(model=model, api_key=key)
+    llm = get_gemini_llm(key, model)
     
     if mode == "EDIT":
         system_prompt = textwrap.dedent(f"""
