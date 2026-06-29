@@ -3,7 +3,7 @@
 The `ai fix` command — diagnoses failed shell commands and suggests fixes.
 
 Usage:
-  ai fix                         Re-runs last command from history, diagnoses the error
+  ai fix                         Auto-detects last failed command and suggests a fix
   ai fix "error message here"    Diagnose a pasted error
   some_command 2>&1 | ai fix     Pipe error output directly
 """
@@ -13,6 +13,7 @@ import subprocess
 import typer
 import questionary
 import textwrap
+from pathlib import Path
 from typing import List, Optional
 from typing_extensions import Annotated
 from rich.console import Console
@@ -32,12 +33,13 @@ fix_app = typer.Typer(
 console = Console()
 
 
-def _get_last_command_from_history() -> str:
+def _get_last_command() -> str:
     """
-    Reads the most recent non-ai-fix command from the shell history file.
-    Handles both bash (plain) and zsh extended history formats.
+    Gets the most recent non-ai command from the shell history file.
+    Walks backwards through the file to skip blank lines and 'ai ...' commands.
     """
-    history_file = get_history_file()
+    history_file = os.environ.get("HISTFILE") or get_history_file()
+
     if not history_file or not os.path.exists(history_file):
         return ""
 
@@ -50,12 +52,35 @@ def _get_last_command_from_history() -> str:
             # Handle zsh extended history format: ": timestamp:0;command"
             if cmd.startswith(": ") and ";" in cmd:
                 cmd = cmd.split(";", 1)[1].strip()
-            # Skip empty lines and the 'ai fix' command itself
-            if cmd and not cmd.startswith("ai fix"):
+            if cmd and not cmd.startswith("ai "):
                 return cmd
-        return ""
+
     except Exception:
-        return ""
+        pass
+
+    return ""
+
+
+def _capture_error(command: str) -> tuple[int, str]:
+    """
+    Runs a command silently and returns (exit_code, combined_error_output).
+    Merges stderr + stdout so nothing is missed.
+    """
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            executable=os.environ.get("SHELL", "/bin/bash"),
+            timeout=30,
+        )
+        output = (result.stderr + result.stdout).strip()
+        return result.returncode, output
+    except subprocess.TimeoutExpired:
+        return -1, "Command timed out after 30 seconds."
+    except Exception as e:
+        return -1, str(e)
 
 
 def _diagnose_and_fix(error_context: str, key: str, model: str) -> str:
@@ -64,18 +89,18 @@ def _diagnose_and_fix(error_context: str, key: str, model: str) -> str:
 
     prompt = textwrap.dedent(f"""
         You are an expert shell/DevOps engineer diagnosing a command error.
-        
+
         {error_context}
-        
+
         OS: {get_os_details()}
         Shell: {get_shell_details()}
-        
+
         Provide your response in this EXACT format (each section on its own line):
-        
+
         DIAGNOSIS: [1-2 sentence explanation of what went wrong]
-        
+
         FIX: [the corrected command — ONLY the raw command, no backticks, no markdown]
-        
+
         EXPLANATION: [Brief explanation of what was changed and why]
     """)
 
@@ -115,15 +140,16 @@ def main(
     ctx: typer.Context,
     error_words: Annotated[
         Optional[List[str]],
-        typer.Argument(help="Error text to diagnose. If omitted, reads from history or stdin."),
+        typer.Argument(help="Error text or command to diagnose. If omitted, auto-detects last command."),
     ] = None,
 ):
     """
     Diagnose a failed command and suggest a fix.
 
     Examples:
-      ai fix                              Re-run last command and diagnose
-      ai fix "ModuleNotFoundError: ..."   Diagnose a pasted error
+      ai fix                              Auto-detect last failed command
+      ai fix lsg                          Diagnose a specific command
+      ai fix \"ModuleNotFoundError: ...\"   Diagnose a pasted error
       npm run build 2>&1 | ai fix         Pipe error output
     """
     if ctx.invoked_subcommand is not None:
@@ -151,62 +177,53 @@ def main(
             console.print("[yellow]No error received from pipe.[/yellow]")
             return
 
-    # ── Priority 2: User provided error text as arguments ──
+    # ── Priority 2: User provided a command/error as argument ──
     elif error_words:
-        error_text = " ".join(error_words)
-        error_context = f"ERROR/CONTEXT: {error_text}"
+        user_input = " ".join(error_words)
+        # If it looks like a command (no spaces or looks like a shell command), try running it
+        exit_code, output = _capture_error(user_input)
+        if exit_code != 0:
+            error_context = (
+                f"COMMAND: {user_input}\n"
+                f"EXIT CODE: {exit_code}\n"
+                f"ERROR OUTPUT:\n{output[:2000]}"
+            )
+        else:
+            # Treated as a plain error/context description
+            error_context = f"ERROR/CONTEXT: {user_input}"
 
-    # ── Priority 3: Read last command from history and re-run it ──
+    # ── Priority 3: Auto-detect last command from history, re-run to capture error ──
     else:
-        last_cmd = _get_last_command_from_history()
+        last_cmd = _get_last_command()
         if not last_cmd:
-            console.print("[yellow]No error provided and couldn't read shell history.[/yellow]")
-            console.print('[dim]Usage: ai fix "error message" or command 2>&1 | ai fix[/dim]')
+            console.print("[yellow]Could not read shell history.[/yellow]")
+            console.print('[dim]Tip: ai fix <command>  — e.g. ai fix lsg[/dim]')
             return
 
-        console.print(f"[dim]Last command found:[/dim] [bold yellow]{last_cmd}[/bold yellow]")
-        rerun = questionary.confirm("Re-run this command to capture the error?", default=True).ask()
+        console.print(f"[dim]Detected:[/dim] [bold yellow]{last_cmd}[/bold yellow]")
+        console.print("[dim]Running to capture error...[/dim]\n")
 
-        if not rerun:
-            manual_error = questionary.text("Paste the error message instead:").ask()
-            if manual_error:
-                error_context = f"COMMAND: {last_cmd}\nERROR: {manual_error}"
-            else:
-                console.print("[yellow]No error provided. Aborting.[/yellow]")
-                return
-        else:
-            console.print(f"\n[dim]Re-running: {last_cmd}[/dim]\n")
-            try:
-                result = subprocess.run(
-                    last_cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    executable=os.environ.get("SHELL"),
-                    timeout=30,
-                )
-            except subprocess.TimeoutExpired:
-                error_context = f"COMMAND: {last_cmd}\nERROR: Command timed out after 30 seconds."
-            else:
-                if result.returncode == 0:
-                    console.print("[green]✔ Command succeeded! Nothing to fix.[/green]")
-                    return
+        exit_code, output = _capture_error(last_cmd)
 
-                error_context = (
-                    f"COMMAND: {last_cmd}\n"
-                    f"EXIT CODE: {result.returncode}\n"
-                    f"STDERR:\n{result.stderr[:2000]}\n"
-                    f"STDOUT:\n{result.stdout[:1000]}"
-                )
+        if exit_code == 0:
+            console.print("[green]✔ That command ran successfully — nothing to fix![/green]")
+            console.print(f"[dim]If you meant a different command, run: ai fix <command>[/dim]")
+            return
+
+        error_context = (
+            f"COMMAND: {last_cmd}\n"
+            f"EXIT CODE: {exit_code}\n"
+            f"ERROR OUTPUT:\n{output[:2000]}"
+        )
 
     if not error_context:
         console.print("[yellow]No error to diagnose.[/yellow]")
         return
 
     # ── Diagnose with LLM ──
-    console.print(f"\n[bold cyan]🔍 Diagnosing error...[/bold cyan]\n")
+    console.print(f"\n[bold cyan]🔍 Diagnosing...[/bold cyan]\n")
 
-    with console.status("[cyan]Analyzing error...[/cyan]"):
+    with console.status("[cyan]Analyzing...[/cyan]"):
         response = _diagnose_and_fix(error_context, key, model)
         parsed = _parse_fix_response(response)
 
@@ -226,7 +243,7 @@ def main(
     if parsed["explanation"]:
         console.print(Panel(parsed["explanation"], title="💡 Explanation", border_style="dim"))
 
-    # If not piped, offer interactive options
+    # ── Offer to run the fix ──
     if not piped_mode and parsed["fix"]:
         action = questionary.select(
             "What would you like to do?",
@@ -246,7 +263,6 @@ def main(
                 _run_fix(edited)
         elif action == "copy":
             import pyperclip
-
             pyperclip.copy(parsed["fix"])
             console.print("[green]✔ Copied to clipboard![/green]")
         else:
